@@ -40,14 +40,6 @@ DEFAULT_WORKSPACE_DIR = Path(__file__).parent.parent.parent / "workspace"
 _PR_URL_FILE = "/tmp/main2main/pr_url.txt"
 
 
-def _gh_token() -> str:
-    try:
-        r = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, check=True)
-        return r.stdout.strip()
-    except subprocess.CalledProcessError:
-        return ""
-
-
 def _detect_default_branch(repo: Path | str, remote: str = "origin") -> str:
     try:
         ref = run_git(repo, "symbolic-ref", f"refs/remotes/{remote}/HEAD").strip()
@@ -143,15 +135,18 @@ def push_and_create_pr(
         # ---- push ----
         if head_fork:
             fork_url = f"https://github.com/{head_fork}.git"
-            token = os.getenv("GH_TOKEN", "") or _gh_token()
-            fork_remote = f"https://{token}@github.com/{head_fork}.git" if token else fork_url
-            print(f"[push] Pushing to fork: {fork_url}")
-            run_git(ascend_path, "-c", "credential.helper=", "-c", "http.extraheader=", "push", "--force-with-lease", fork_remote, branch)
+            # add fork remote (use set-url in case it already exists)
+            subprocess.run(["git", "remote", "add", "fork", fork_url],
+                           cwd=str(ascend_path), capture_output=True)
+            subprocess.run(["git", "remote", "set-url", "fork", fork_url],
+                           cwd=str(ascend_path), capture_output=True, check=True)
+            run_git(ascend_path, "push", "--force-with-lease", "fork", branch)
             head_ref = f"{head_fork.split('/')[0]}:{branch}"
+            print(f"[push] Pushed to fork: {fork_url}")
         else:
             run_git(ascend_path, "push", "origin", branch)
             head_ref = branch
-        print(f"[push] Pushed branch '{branch}'.")
+            print(f"[push] Pushed branch '{branch}'.")
 
         # ---- PR ----
         base_branch = _detect_default_branch(ascend_path)
@@ -170,7 +165,6 @@ def push_and_create_pr(
 
         result = subprocess.run(
             gh_cmd, capture_output=True, text=True, cwd=str(ascend_path),
-            env={**os.environ, "GH_TOKEN": os.getenv("GH_TOKEN", "")},
         )
         if result.returncode != 0:
             print(f"[push] PR create FAILED: {result.stderr.strip()}", flush=True)
