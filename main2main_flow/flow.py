@@ -9,14 +9,14 @@ from pydantic import BaseModel
 
 from crewai.flow import Flow, listen, start, router
 
-from agent.opencode_adapter import AdaptResult, run_opencode_adapter
-from scripts.detect_commits import detect
-from scripts.plan_steps import run_plan
-from scripts.pre_ci_check import run_check
-from scripts.push_to_github import push_and_create_pr
-from scripts.run_tests import run_tests
-from scripts.update_commit_reference import run_update
-from utils import (
+from main2main_flow.agent.opencode_adapter import AdaptResult, run_opencode_adapter
+from main2main_flow.scripts.detect_commits import detect
+from main2main_flow.scripts.plan_steps import run_plan
+from main2main_flow.scripts.pre_ci_check import run_check
+from main2main_flow.scripts.push_to_github import push_and_create_pr
+from main2main_flow.scripts.run_tests import run_tests
+from main2main_flow.scripts.update_commit_reference import run_update
+from main2main_flow.utils import (
     UpgradeCompleted, UpgradeFailed,
     HasCommit, HasNoCommit, resolve_path, WORKSPACE_DIR, DETECT_FILE, STEPS_FILE, FINAL_SUMMARY_FILE, FINAL_TARGET_PATCH_FILE,
     STEPS_DIR, VLLM_GIT_PATCH_FILE, VLLM_GIT_CHANGED_FILES, PRE_CI_CHECK_FILE,
@@ -25,6 +25,13 @@ from utils import (
 )
 
 _REFERENCE_DIR = str(Path(__file__).parent / "reference")
+
+
+def _parse_test_cases_env() -> list[str] | None:
+    val = os.getenv("MAIN2MAIN_TEST_CASES", "").strip()
+    if not val:
+        return None
+    return [t.strip() for t in val.replace("\n", " ").split() if t.strip()]
 
 
 class Main2MainState(BaseModel):
@@ -282,7 +289,8 @@ class Main2MainFlow(Flow[Main2MainState]):
             patch_path=self.state.cur_patch_path or None,
             step_id=step_id,
             select_by_files=self.state.changed_files or None,
-            remote="env",
+            test_cases=_parse_test_cases_env(),
+            remote=os.getenv("MAIN2MAIN_RUN_TESTS_REMOTE") or None,
             round_number=self.state.retry_count,
             log_dir=str(WORKSPACE_DIR / STEPS_DIR),
         )
@@ -303,6 +311,15 @@ class Main2MainFlow(Flow[Main2MainState]):
         # concatenating available step summaries if the last one is missing.
         if self.state.current_step == 0:
             print(f"[generate_final_post] fail to upgrade, no step success")
+            (WORKSPACE_DIR / FINAL_SUMMARY_FILE).write_text(
+                "main2main adaptation failed — no steps completed.\n", encoding="utf-8"
+            )
+            (WORKSPACE_DIR / "final_status.json").write_text(
+                json.dumps({"status": "failed", "steps_completed": 0, "steps_total": self.state.total_steps,
+                            "reached_commit": "", "old_commit": self.state.base_commit,
+                            "new_commit": self.state.target_commit or ""}, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8"
+            )
             return
 
         last_step = self.state.steps[self.state.current_step - 1]
@@ -321,7 +338,9 @@ class Main2MainFlow(Flow[Main2MainState]):
                     summaries.append(summary_path.read_text(encoding="utf-8"))
             final_summary_path.write_text("\n\n".join(summaries), encoding="utf-8")
 
-        shutil.copy2(step_dir / EACH_STEP_TARGET_PATCH_FILE, WORKSPACE_DIR / FINAL_TARGET_PATCH_FILE)
+        step_patch = step_dir / EACH_STEP_TARGET_PATCH_FILE
+        if step_patch.exists():
+            shutil.copy2(step_patch, WORKSPACE_DIR / FINAL_TARGET_PATCH_FILE)
 
         status = "completed" if self.state.final_status == UpgradeCompleted else "failed"
         status_json = {
@@ -335,6 +354,15 @@ class Main2MainFlow(Flow[Main2MainState]):
         (WORKSPACE_DIR / "final_status.json").write_text(
             json.dumps(status_json, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
         )
+
+        # Ensure final_summary.md is non-empty (stub for dry runs)
+        final = WORKSPACE_DIR / FINAL_SUMMARY_FILE
+        if not final.exists() or final.stat().st_size == 0:
+            final.write_text(
+                f"main2main completed: {self.state.final_status}\n"
+                f"Steps: {self.state.current_step}/{self.state.total_steps}\n",
+                encoding="utf-8"
+            )
 
         last_guide_path = step_dir / EACH_STEP_CODE_STRUCTURE_GUIDE_FILE
         if last_guide_path.exists():

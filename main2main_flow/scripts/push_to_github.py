@@ -34,7 +34,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from utils import run_git
+from main2main_flow.utils import run_git
 
 DEFAULT_WORKSPACE_DIR = Path(__file__).parent.parent.parent / "workspace"
 _PR_URL_FILE = "/tmp/main2main/pr_url.txt"
@@ -49,27 +49,6 @@ def _detect_default_branch(repo: Path | str, remote: str = "origin") -> str:
 
 
 def _ensure_gh_auth(ascend_path: Path | str) -> None:
-    try:
-        subprocess.run(
-            ["gh", "auth", "status"],
-            check=True, capture_output=True, text=True,
-        )
-        print("[push] gh CLI already authenticated.")
-    except subprocess.CalledProcessError:
-        gh_token = os.getenv("GH_TOKEN", "")
-        if not gh_token:
-            print("[push] gh not authenticated and GH_TOKEN not set. "
-                  "Run 'gh auth login' locally or set GH_TOKEN in CI.",
-                  file=sys.stderr)
-            sys.exit(1)
-        print("[push] Authenticating gh CLI with GH_TOKEN...")
-        subprocess.run(
-            ["gh", "auth", "login",
-             "--with-token"],
-            input=gh_token, check=True, capture_output=True, text=True,
-        )
-        print("[push] gh CLI authenticated via GH_TOKEN.")
-
     run_git(ascend_path, "config", "credential.helper", "!gh auth git-credential")
     print("[push] Git credential helper set to 'gh auth git-credential'.")
 
@@ -133,7 +112,7 @@ def push_and_create_pr(
         return ""
 
     try:
-        if has_patch:
+        if has_patch and not (os.getenv("MAIN2MAIN_KEEP_BRANCH") == "true" and not is_detached):
             # Apply-patch mode: create fresh branch from current commit
             ts = datetime.now().strftime("%Y%m%d-%H%M%S")
             branch = branch_name or f"update/main2main-{ts}"
@@ -155,14 +134,19 @@ def push_and_create_pr(
 
         # ---- push ----
         if head_fork:
-            fork_remote = f"https://github.com/{head_fork}.git"
-            print(f"[push] Pushing to fork: {fork_remote}")
-            run_git(ascend_path, "push", "--force-with-lease", fork_remote, branch)
+            fork_url = f"https://github.com/{head_fork}.git"
+            # add fork remote (use set-url in case it already exists)
+            subprocess.run(["git", "remote", "add", "fork", fork_url],
+                           cwd=str(ascend_path), capture_output=True)
+            subprocess.run(["git", "remote", "set-url", "fork", fork_url],
+                           cwd=str(ascend_path), capture_output=True, check=True)
+            run_git(ascend_path, "push", "--force-with-lease", "fork", branch)
             head_ref = f"{head_fork.split('/')[0]}:{branch}"
+            print(f"[push] Pushed to fork: {fork_url}")
         else:
             run_git(ascend_path, "push", "origin", branch)
             head_ref = branch
-        print(f"[push] Pushed branch '{branch}'.")
+            print(f"[push] Pushed branch '{branch}'.")
 
         # ---- PR ----
         base_branch = _detect_default_branch(ascend_path)
@@ -180,8 +164,11 @@ def push_and_create_pr(
             gh_cmd.append("--draft")
 
         result = subprocess.run(
-            gh_cmd, check=True, capture_output=True, text=True, cwd=str(ascend_path)
+            gh_cmd, capture_output=True, text=True, cwd=str(ascend_path),
         )
+        if result.returncode != 0:
+            print(f"[push] PR create FAILED: {result.stderr.strip()}", flush=True)
+            result.check_returncode()
         pr_url = result.stdout.strip()
         print(f"[push] PR created: {pr_url}")
 

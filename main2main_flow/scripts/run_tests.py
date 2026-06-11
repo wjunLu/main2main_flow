@@ -161,10 +161,15 @@ def _sync_remote_dir(host: str, remote_dir: str, local_dir: Path) -> bool:
 # =============================================================================
 
 def _detect_cards(run_cmd) -> tuple[int, str]:
+    visible = os.environ.get("ASCEND_RT_VISIBLE_DEVICES", "")
+    if visible:
+        ids = [s.strip() for s in visible.split(",") if s.strip().isdigit()]
+        if ids:
+            return len(ids), ",".join(ids)
     result = run_cmd(
         "ls /dev/davinci[0-9]* 2>/dev/null | sed 's/.*davinci//' | sort -n"
     )
-    ids: list[str] = []
+    ids = []
     for token in result.stdout.strip().split():
         try:
             ids.append(str(int(token)))
@@ -241,18 +246,21 @@ def setup_env(vllm_path: Path, vllm_commit: str, ascend_path: Path,
     print("=== Install vLLM ===")
     _pip_install(vllm_path, extra_env={"VLLM_TARGET_DEVICE": "empty"})
 
-    print("=== Setup vllm-ascend ===")
-    _ensure_repo(ascend_path, ascend_remote)
-    _run_checked(["git", "fetch", "origin", "--force"], ascend_path, "fetch origin")
-    _run_checked(["git", "reset", "--hard", "origin/main"], ascend_path, "reset to origin/main")
-    _run_checked(["git", "checkout", ascend_commit], ascend_path, f"checkout {ascend_commit[:8]}")
-    if patch_path:
-        if not patch_path.exists():
-            print(f"Error: patch not found: {patch_path}", file=sys.stderr)
-            sys.exit(1)
-        _run_checked(["git", "apply", str(patch_path)], ascend_path, f"git apply {patch_path.name}")
-    print("=== Install vllm-ascend ===")
-    _pip_install(ascend_path, requirements="requirements-dev.txt", verbose=True, skip_editable=True)
+    if os.getenv("MAIN2MAIN_KEEP_BRANCH", "false").lower() == "true":
+        print("=== vllm-ascend: branch kept, no reset needed ===")
+    else:
+        print("=== Setup vllm-ascend ===")
+        _ensure_repo(ascend_path, ascend_remote)
+        _run_checked(["git", "fetch", "origin", "--force"], ascend_path, "fetch origin")
+        _run_checked(["git", "reset", "--hard", "origin/main"], ascend_path, "reset to origin/main")
+        _run_checked(["git", "checkout", ascend_commit], ascend_path, f"checkout {ascend_commit[:8]}")
+        if patch_path:
+            if not patch_path.exists():
+                print(f"Error: patch not found: {patch_path}", file=sys.stderr)
+                sys.exit(1)
+            _run_checked(["git", "apply", str(patch_path)], ascend_path, f"git apply {patch_path.name}")
+        print("=== Install vllm-ascend ===")
+        _pip_install(ascend_path, requirements="requirements-dev.txt", verbose=True, skip_editable=True)
     print(f"\nSetup complete.\n  vLLM: {vllm_path} @ {vllm_commit[:8]}\n"
           f"  vllm-ascend: {ascend_path} @ {ascend_commit[:8]}"
           + (f" + {patch_path.name}" if patch_path else ""))
@@ -343,8 +351,13 @@ def _run_to_log(command: list[str], cwd: Path, log_path: Path,
                 env: dict[str, str]) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("w", encoding="utf-8") as f:
-        return subprocess.Popen(command, cwd=cwd, env=env, stdout=f,
-                                stderr=subprocess.STDOUT).wait()
+        proc = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            f.write(line)
+            print(line, end="", flush=True)
+        return proc.wait()
 
 
 def _run_summary(ci_log_summary: Path, log_path: Path, summary_path: Path,
@@ -392,6 +405,21 @@ def _classify(exit_code: int, summary: dict | None, error: str | None) -> str:
     return "failed"
 
 
+def _discover_test_files(ascend_path: Path, paths: list[str]) -> list[str]:
+    """Expand directories into individual test_*.py files."""
+    result: list[str] = []
+    for p in paths:
+        full = (ascend_path / p).resolve() if not os.path.isabs(p) else Path(p).resolve()
+        if full.is_file():
+            result.append(str(full.relative_to(ascend_path)))
+        elif full.is_dir():
+            for tf in sorted(full.rglob("test_*.py")):
+                result.append(str(tf.relative_to(ascend_path)))
+        else:
+            print(f"  [warn] Test path not found: {p}", flush=True)
+    return result
+
+
 def _select_tests_by_files(ascend_path: Path, changed_files: list[str]) -> list[str] | None:
     """Call vllm-ascend's select_tests.py to resolve changed files → test files.
 
@@ -405,9 +433,13 @@ def _select_tests_by_files(ascend_path: Path, changed_files: list[str]) -> list[
     r = subprocess.run(
         [sys.executable, str(select_script), "--changed-files"] + changed_files,
         cwd=ascend_path, capture_output=True, text=True,
+        env={**os.environ, "GITHUB_OUTPUT": ""},  # force stdout output
     )
+    if r.stderr.strip():
+        for line in r.stderr.strip().splitlines():
+            print(f"  [select_tests] {line}", flush=True)
     if r.returncode != 0:
-        print(f"  [warn] select_tests.py failed:\n{r.stderr}", flush=True)
+        print(f"  [warn] select_tests.py failed (exit {r.returncode})", flush=True)
         return None
 
     # Parse key=value output (GITHUB_OUTPUT format)
@@ -427,6 +459,8 @@ def _select_tests_by_files(ascend_path: Path, changed_files: list[str]) -> list[
 
     tests: list[str] = []
     for g in groups:
+        if g.get("npu_type") == "cpu":
+            continue  # skip CPU-only tests, main2main runs on NPU
         for t in g.get("tests", "").split():
             tests.append(t)
     return tests or None
@@ -466,8 +500,6 @@ def _run_one_test(cmd: list[str], log_path: Path, summary_path: Path,
                   ascend_path: Path, step_id: int, round_number: int,
                   env: dict[str, str], *, is_remote: bool, is_mock: bool) -> dict:
     """Execute one test and return its result dict."""
-    if not is_remote:
-        env["ASCEND_RT_VISIBLE_DEVICES"] = devices
     cwd = Path("/tmp") if is_remote else ascend_path
     exit_code = _run_to_log(cmd, cwd, log_path, env)
     cards = _test_cards(test)
@@ -505,6 +537,7 @@ def run_tests(
     patch_path: str | Path | None = None,
     step_id: int = 0,
     select_by_files: list[str] | None = None,
+    test_cases: list[str] | None = None,
     remote: str | None = None,
     log_dir: str | Path = "",
     remote_log_dir: str | Path | None = None,
@@ -531,8 +564,11 @@ def run_tests(
     remote_vllm = Path(remote_vllm_path) if remote_vllm_path else Path("/vllm-workspace/vllm")
     remote_ascend = Path(remote_ascend_path) if remote_ascend_path else Path("/vllm-workspace/vllm-ascend")
 
-    # ---- step 1: resolve tests via vllm-ascend's select_tests.py ----
-    if select_by_files:
+    # ---- step 1: resolve tests ----
+    if test_cases:
+        test_files = test_cases
+        print(f"Using {len(test_files)} fixed test cases")
+    elif select_by_files:
         print(f"Selecting tests for {len(select_by_files)} changed file(s)")
         test_files = _select_tests_by_files(ascend_path, select_by_files) or []
         print(f"Selected {len(test_files)} test(s)")
@@ -606,6 +642,7 @@ def run_tests(
     # ---- step 7: schedule ----
     ci_dir = log_dir / str(step_id) / "tests"
     result_path = ci_dir / f"round-{round_number}-result.json"
+    sequential = sequential or not remote_host
     rounds = [[t] for t in test_files] if sequential else _schedule_rounds(test_files, total_cards)
     device_rounds = _assign_devices(rounds, all_phy_ids)
 
@@ -630,12 +667,12 @@ def run_tests(
 
     for round_idx, rnd in enumerate(device_rounds, start=1):
         round_t0 = time.monotonic()
-        print(f"\n== Round {round_idx}/{len(device_rounds)}: {len(rnd)} test(s) ==", flush=True)
+        print(f"\n== Round {round_idx}/{len(rounds)}: {len(rnd)} test(s) ==", flush=True)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(rnd)) as executor:
             futs = {}
             for test, devices in rnd:
-                slug = test.replace("/", "__").replace(".py", "")
+                slug = test.replace("/", "__").replace(".py", "").replace("::", "--")
                 lp = ci_dir / f"round-{round_number}-{slug}.log"
                 sp = ci_dir / f"round-{round_number}-{slug}-summary.json"
                 cmd = _build_test_cmd(test, devices, ascend_path=ascend_path,
@@ -650,12 +687,20 @@ def run_tests(
                 print(f"  [{test}] started ({_test_cards(test)} card(s))", flush=True)
 
             round_results = []
+            printed_failure = False
             for fut in concurrent.futures.as_completed(futs):
                 r = fut.result()
                 round_results.append(r)
                 print(f"  [{futs[fut]}] done: exit={r['run_suite_exit_code']}, "
                       f"result={r['ci_result']}, bugs={r['code_bugs_count']}, "
                       f"flakes={r['env_flakes_count']}", flush=True)
+                if not printed_failure and r['run_suite_exit_code'] != 0:
+                    printed_failure = True
+                    log_path = Path(r['log_path'])
+                    if log_path.exists():
+                        log_content = log_path.read_text(encoding="utf-8", errors="replace")
+                        tail = "\n".join(log_content.splitlines()[-40:])
+                        print(f"  [FAILED] log tail ({r['test']}):\n{tail}", flush=True)
 
         round_elapsed = time.monotonic() - round_t0
         all_results.extend(round_results)

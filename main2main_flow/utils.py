@@ -7,7 +7,9 @@ UpgradeFailed = "UpgradeFailed"
 HasCommit = "HasCommit"
 HasNoCommit = "HasNoCommit"
 
-WORKSPACE_DIR = Path(__file__).parent.parent / "workspace"
+import os as _os
+_ws_env = _os.environ.get("MAIN2MAIN_WORKSPACE", "")
+WORKSPACE_DIR = Path(_ws_env) if _ws_env else (Path(__file__).parent.parent / "workspace")
 DETECT_FILE = "detect.json"
 STEPS_FILE = "steps.json"
 STEPS_DIR = "steps"
@@ -25,10 +27,13 @@ def run_git(repo: Path | str, *args: str) -> str:
     result = subprocess.run(
         ["git", *args],
         cwd=str(repo),
-        check=True,
         capture_output=True,
         text=True,
     )
+    if result.returncode != 0:
+        cmd = " ".join(args)
+        print(f"[git] FAILED: git {cmd}\n{result.stderr.strip()}", flush=True)
+        result.check_returncode()
     return result.stdout
 
 
