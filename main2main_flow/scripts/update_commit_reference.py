@@ -22,14 +22,14 @@ import re
 import sys
 from pathlib import Path
 
-from main2main_flow.utils import run_git
+from main2main_flow.utils import run_git, ts_print
 
 COMMIT_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
 def _validate_commit(label: str, value: str) -> str:
     if not COMMIT_RE.fullmatch(value):
-        print(f"Error: {label} must be a 40-character git SHA", file=sys.stderr)
+        ts_print(f"Error: {label} must be a 40-character git SHA", file=sys.stderr)
         sys.exit(1)
     return value.lower()
 
@@ -109,18 +109,18 @@ def main() -> None:
 
     repo = args.ascend_path
     if not (repo / ".git").exists():
-        print(f"Error: {repo} is not a git repository", file=sys.stderr)
+        ts_print(f"Error: {repo} is not a git repository", file=sys.stderr)
         sys.exit(1)
 
     old_commit = _validate_commit("old-commit", args.old_commit)
     new_commit = _validate_commit("new-commit", args.new_commit)
     if old_commit == new_commit:
-        print("Error: old-commit and new-commit are identical", file=sys.stderr)
+        ts_print("Error: old-commit and new-commit are identical", file=sys.stderr)
         sys.exit(1)
 
     updated = _replace_in_tracked_files(repo, old_commit, new_commit, args.dry_run)
     if not updated:
-        print(f"Error: old commit not found in tracked files: {old_commit}", file=sys.stderr)
+        ts_print(f"Error: old commit not found in tracked files: {old_commit}", file=sys.stderr)
         sys.exit(1)
 
     result = {
@@ -131,7 +131,7 @@ def main() -> None:
         "replacement_count": sum(int(item["replacements"]) for item in updated),
         "replacements": updated,
     }
-    print(json.dumps(result, indent=2))
+    ts_print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

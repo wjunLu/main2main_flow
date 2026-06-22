@@ -17,7 +17,7 @@ import re
 import sys
 from pathlib import Path
 
-from main2main_flow.utils import run_git
+from main2main_flow.utils import run_git, ts_print
 
 
 def _extract_from_conf_py(ascend_path: Path) -> dict[str, str | None]:
@@ -32,12 +32,12 @@ def _extract_from_conf_py(ascend_path: Path) -> dict[str, str | None]:
     else:
         conf_path = ascend_path / "docs" / "source" / "conf.py"
         if not conf_path.exists():
-            print(f"Error: {conf_path} not found", file=sys.stderr)
+            ts_print(f"Error: {conf_path} not found", file=sys.stderr)
             sys.exit(1)
         conf_text = conf_path.read_text(encoding="utf-8")
         commit_match = re.search(r'"main_vllm_commit":\s*"([0-9a-f]{40})"', conf_text)
         if not commit_match:
-            print("Error: could not find main_vllm_commit in conf.py", file=sys.stderr)
+            ts_print("Error: could not find main_vllm_commit in conf.py", file=sys.stderr)
             sys.exit(1)
         base_commit = commit_match.group(1)
 
@@ -52,7 +52,7 @@ def _extract_from_conf_py(ascend_path: Path) -> dict[str, str | None]:
 def _get_repo_head(repo_path: Path) -> str:
     """Return the HEAD commit SHA of a local git repository."""
     if not repo_path.exists():
-        print(f"Error: path does not exist: {repo_path}", file=sys.stderr)
+        ts_print(f"Error: path does not exist: {repo_path}", file=sys.stderr)
         sys.exit(1)
 
     return run_git(repo_path, "rev-parse", "HEAD").strip()

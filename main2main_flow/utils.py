@@ -1,6 +1,13 @@
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
+
+
+def ts_print(*args, **kwargs) -> None:
+    """Print with [HH:MM:SS.mmm] timestamp prefix."""
+    ts = datetime.now(timezone.utc).strftime("%H:%M:%S.") + f"{datetime.now(timezone.utc).microsecond // 1000:03d}"
+    print(f"[{ts}]", *args, **kwargs)
 
 UpgradeCompleted = "UpgradeCompleted"
 UpgradeFailed = "UpgradeFailed"
@@ -32,7 +39,7 @@ def run_git(repo: Path | str, *args: str) -> str:
     )
     if result.returncode != 0:
         cmd = " ".join(args)
-        print(f"[git] FAILED: git {cmd}\n{result.stderr.strip()}", flush=True)
+        ts_print(f"[git] FAILED: git {cmd}\n{result.stderr.strip()}", flush=True)
         result.check_returncode()
     return result.stdout
 
@@ -42,7 +49,7 @@ def is_git_url(path: str) -> bool:
 
 
 def clone_repo(url: str, target: str) -> None:
-    print(f"[init] Cloning {url} → {target}")
+    ts_print(f"[init] Cloning {url} → {target}")
     subprocess.run(["git", "clone", url, target], check=True)
 
 

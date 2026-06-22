@@ -29,6 +29,8 @@ import sys
 import time
 from pathlib import Path
 
+from main2main_flow.utils import ts_print
+
 PASS_RESULTS = {"passed", "env_flake_pass"}
 DEFAULT_VLLM_REPO = "https://github.com/vllm-project/vllm.git"
 DEFAULT_ASCEND_REPO = "https://github.com/vllm-project/vllm-ascend.git"
@@ -104,9 +106,9 @@ def _resolve_remote(remote: str) -> tuple[str, str]:
     host = remote if "@" in remote else os.getenv("MAIN2MAIN_REMOTE_HOST", "")
     container = os.getenv("MAIN2MAIN_REMOTE_CONTAINER", "")
     if not host or not container:
-        print("Error: --remote used but MAIN2MAIN_REMOTE_HOST / _CONTAINER not set", file=sys.stderr)
+        ts_print("Error: --remote used but MAIN2MAIN_REMOTE_HOST / _CONTAINER not set", file=sys.stderr)
         sys.exit(1)
-    print(f"  Remote target: {host}  container: {container}")
+    ts_print(f"  Remote target: {host}  container: {container}")
     return host, container
 
 
@@ -119,13 +121,13 @@ def _ensure_container_running(host: str, container: str) -> None:
     check = _ssh(host, f"docker inspect -f '{{{{.State.Running}}}}' {cq}",
                  capture_output=True, text=True)
     if check.returncode != 0:
-        print(f"  Container {container} not found on {host}, will try to proceed anyway")
+        ts_print(f"  Container {container} not found on {host}, will try to proceed anyway")
         return
     if check.stdout.strip() == "true":
-        print(f"  Container {container} is already running")
+        ts_print(f"  Container {container} is already running")
         return
 
-    print(f"  Container {container} is stopped, starting ...", flush=True)
+    ts_print(f"  Container {container} is stopped, starting ...", flush=True)
     _ssh(host, f"docker start {cq}", capture_output=True, text=True)
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
@@ -133,9 +135,9 @@ def _ensure_container_running(host: str, container: str) -> None:
         poll = _ssh(host, f"docker inspect -f '{{{{.State.Running}}}}' {cq}",
                     capture_output=True, text=True)
         if poll.stdout.strip() == "true":
-            print(f"  Container {container} is now running", flush=True)
+            ts_print(f"  Container {container} is now running", flush=True)
             return
-    print(f"  [warn] Container {container} did not become running within 60s", flush=True)
+    ts_print(f"  [warn] Container {container} did not become running within 60s", flush=True)
 
 
 def _sync_remote_dir(host: str, remote_dir: str, local_dir: Path) -> bool:
@@ -151,7 +153,7 @@ def _sync_remote_dir(host: str, remote_dir: str, local_dir: Path) -> bool:
         cmd = ["scp", "-r", *_SSH_OPTS, f"{host}:{remote_dir}/.", str(local_dir) + "/"]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        print(f"  [ERROR] Failed to sync: {result.stderr.strip()}", flush=True)
+        ts_print(f"  [ERROR] Failed to sync: {result.stderr.strip()}", flush=True)
         return False
     return True
 
@@ -183,21 +185,21 @@ def _detect_cards(run_cmd) -> tuple[int, str]:
 # =============================================================================
 
 def _run_checked(cmd: list[str], cwd: Path, label: str) -> None:
-    print(f"  {label} ... ", end="", flush=True)
+    ts_print(f"  {label} ... ", end="", flush=True)
     r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     if r.returncode != 0:
-        print("FAILED")
-        print(r.stderr.strip(), file=sys.stderr)
+        ts_print("FAILED")
+        ts_print(r.stderr.strip(), file=sys.stderr)
         sys.exit(r.returncode)
-    print("OK")
+    ts_print("OK")
 
 
 def _ensure_repo(path: Path, remote_url: str) -> bool:
     if path.exists():
         if not (path / ".git").exists():
-            print(f"  {path} exists but is not a git repo, removing ... ", end="", flush=True)
+            ts_print(f"  {path} exists but is not a git repo, removing ... ", end="", flush=True)
             shutil.rmtree(path)
-            print("OK")
+            ts_print("OK")
         else:
             _run_checked(["git", "fetch", "--tags", "--force"], path, "fetch")
             return False
@@ -220,6 +222,9 @@ def _setup_mirrors() -> None:
 def _pip_install(repo_path: Path, extra_env: dict | None = None,
                  requirements: str | None = None, verbose: bool = False,
                  skip_editable: bool = False) -> None:
+    if os.environ.get("SKIP_PIP_INSTALL", "false").lower() == "true":
+        ts_print(f"  SKIP_PIP_INSTALL=true, skipping pip install for {repo_path.name}")
+        return
     env = {"PIP_EXTRA_INDEX_URL": "https://mirrors.huaweicloud.com/ascend/repos/pypi"}
     if extra_env:
         env.update(extra_env)
@@ -240,28 +245,28 @@ def setup_env(vllm_path: Path, vllm_commit: str, ascend_path: Path,
               vllm_remote: str = DEFAULT_VLLM_REPO,
               ascend_remote: str = DEFAULT_ASCEND_REPO) -> None:
     _setup_mirrors()
-    print("=== Setup vLLM ===")
+    ts_print("=== Setup vLLM ===")
     _ensure_repo(vllm_path, vllm_remote)
     _run_checked(["git", "checkout", vllm_commit], vllm_path, f"checkout {vllm_commit[:8]}")
-    print("=== Install vLLM ===")
+    ts_print("=== Install vLLM ===")
     _pip_install(vllm_path, extra_env={"VLLM_TARGET_DEVICE": "empty"})
 
     if os.getenv("MAIN2MAIN_KEEP_BRANCH", "false").lower() == "true":
-        print("=== vllm-ascend: branch kept, no reset needed ===")
+        ts_print("=== vllm-ascend: branch kept, no reset needed ===")
     else:
-        print("=== Setup vllm-ascend ===")
+        ts_print("=== Setup vllm-ascend ===")
         _ensure_repo(ascend_path, ascend_remote)
         _run_checked(["git", "fetch", "origin", "--force"], ascend_path, "fetch origin")
         _run_checked(["git", "reset", "--hard", "origin/main"], ascend_path, "reset to origin/main")
         _run_checked(["git", "checkout", ascend_commit], ascend_path, f"checkout {ascend_commit[:8]}")
         if patch_path:
             if not patch_path.exists():
-                print(f"Error: patch not found: {patch_path}", file=sys.stderr)
+                ts_print(f"Error: patch not found: {patch_path}", file=sys.stderr)
                 sys.exit(1)
             _run_checked(["git", "apply", str(patch_path)], ascend_path, f"git apply {patch_path.name}")
-        print("=== Install vllm-ascend ===")
+        ts_print("=== Install vllm-ascend ===")
         _pip_install(ascend_path, requirements="requirements-dev.txt", verbose=True, skip_editable=True)
-    print(f"\nSetup complete.\n  vLLM: {vllm_path} @ {vllm_commit[:8]}\n"
+    ts_print(f"\nSetup complete.\n  vLLM: {vllm_path} @ {vllm_commit[:8]}\n"
           f"  vllm-ascend: {ascend_path} @ {ascend_commit[:8]}"
           + (f" + {patch_path.name}" if patch_path else ""))
 
@@ -356,7 +361,7 @@ def _run_to_log(command: list[str], cwd: Path, log_path: Path,
         assert proc.stdout is not None
         for line in proc.stdout:
             f.write(line)
-            print(line, end="", flush=True)
+            ts_print(line, end="", flush=True)
         return proc.wait()
 
 
@@ -416,7 +421,7 @@ def _discover_test_files(ascend_path: Path, paths: list[str]) -> list[str]:
             for tf in sorted(full.rglob("test_*.py")):
                 result.append(str(tf.relative_to(ascend_path)))
         else:
-            print(f"  [warn] Test path not found: {p}", flush=True)
+            ts_print(f"  [warn] Test path not found: {p}", flush=True)
     return result
 
 
@@ -427,7 +432,7 @@ def _select_tests_by_files(ascend_path: Path, changed_files: list[str]) -> list[
     """
     select_script = ascend_path / ".github/workflows/scripts/select_tests.py"
     if not select_script.exists():
-        print("  [warn] select_tests.py not found, falling back to full scan", flush=True)
+        ts_print("  [warn] select_tests.py not found, falling back to full scan", flush=True)
         return None
 
     r = subprocess.run(
@@ -437,9 +442,9 @@ def _select_tests_by_files(ascend_path: Path, changed_files: list[str]) -> list[
     )
     if r.stderr.strip():
         for line in r.stderr.strip().splitlines():
-            print(f"  [select_tests] {line}", flush=True)
+            ts_print(f"  [select_tests] {line}", flush=True)
     if r.returncode != 0:
-        print(f"  [warn] select_tests.py failed (exit {r.returncode})", flush=True)
+        ts_print(f"  [warn] select_tests.py failed (exit {r.returncode})", flush=True)
         return None
 
     # Parse key=value output (GITHUB_OUTPUT format)
@@ -567,16 +572,16 @@ def run_tests(
     # ---- step 1: resolve tests ----
     if test_cases:
         test_files = test_cases
-        print(f"Using {len(test_files)} fixed test cases")
+        ts_print(f"Using {len(test_files)} fixed test cases")
     elif select_by_files:
-        print(f"Selecting tests for {len(select_by_files)} changed file(s)")
+        ts_print(f"Selecting tests for {len(select_by_files)} changed file(s)")
         test_files = _select_tests_by_files(ascend_path, select_by_files) or []
-        print(f"Selected {len(test_files)} test(s)")
+        ts_print(f"Selected {len(test_files)} test(s)")
     else:
         test_files = []
 
     if not test_files:
-        print("No tests to run.", flush=True)
+        ts_print("No tests to run.", flush=True)
         return {"can_commit": True, "ci_result": "passed", "suite_results": {}}
 
     # ---- step 2: resolve remote ----
@@ -596,9 +601,9 @@ def run_tests(
 
     total_cards, phy_ids = _detect_cards(run_cmd)
     label = "on remote" if remote_host else "local"
-    print(f"  Auto-detected {total_cards} NPU(s) {label} (Phy-IDs: {phy_ids})")
+    ts_print(f"  Auto-detected {total_cards} NPU(s) {label} (Phy-IDs: {phy_ids})")
     if total_cards <= 0:
-        print("Error: could not detect any NPU cards", file=sys.stderr)
+        ts_print("Error: could not detect any NPU cards", file=sys.stderr)
         sys.exit(1)
     all_phy_ids = [int(x) for x in phy_ids.split(",")]
 
@@ -608,24 +613,24 @@ def run_tests(
         if not local.exists():
             local = Path.cwd() / str(patch_path).lstrip("/")
         if local.exists():
-            print(f"=== Syncing patch: {local} -> {remote_container}:{patch_path} ===")
+            ts_print(f"=== Syncing patch: {local} -> {remote_container}:{patch_path} ===")
             _ssh(remote_host, f"docker exec {remote_container} mkdir -p {shlex.quote(str(patch_path.parent))}",
                  capture_output=True, text=True, check=True)
             with open(local, "rb") as f:
                 _ssh(remote_host, f"docker exec -i {remote_container} sh -c 'cat > {shlex.quote(str(patch_path))}'",
                      stdin=f, capture_output=True, text=False, check=True)
-            print("  Patch synced to container successfully")
+            ts_print("  Patch synced to container successfully")
 
     # ---- step 4: setup repos ----
     if remote_host:
-        print("=== Running setup on remote container ===")
+        ts_print("=== Running setup on remote container ===")
         script = _build_setup_script(remote_vllm, vllm_commit, remote_ascend, ascend_commit, patch_path)
         inner = f"docker exec {remote_container} sh -c {shlex.quote(script)}"
         proc = subprocess.Popen(["ssh", *_SSH_OPTS, remote_host, inner],
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         assert proc.stdout is not None
         for line in proc.stdout:
-            print(line, end="", flush=True)
+            ts_print(line, end="", flush=True)
         if proc.wait() != 0:
             raise RuntimeError(f"Remote setup failed with exit code {proc.returncode}")
     else:
@@ -647,17 +652,17 @@ def run_tests(
     device_rounds = _assign_devices(rounds, all_phy_ids)
 
     parallel_count = sum(1 for r in rounds if len(r) > 1)
-    print(f"Schedule ({len(rounds)} round(s), {parallel_count} parallel, total cards: {total_cards}):")
+    ts_print(f"Schedule ({len(rounds)} round(s), {parallel_count} parallel, total cards: {total_cards}):")
     for i, rnd in enumerate(device_rounds):
         usage = sum(_test_cards(t) for t, _ in rnd)
         mode = "parallel" if len(rnd) > 1 else "serial"
-        print(f"  Round {i+1} ({mode}, using {usage}/{total_cards} cards):")
+        ts_print(f"  Round {i+1} ({mode}, using {usage}/{total_cards} cards):")
         for t, d in rnd:
-            print(f"    {t}  ({_test_cards(t)}c, devs={d})")
-    print(flush=True)
+            ts_print(f"    {t}  ({_test_cards(t)}c, devs={d})")
+    ts_print(flush=True)
 
     if dry_run:
-        print("[dry-run] Skipping execution.", flush=True)
+        ts_print("[dry-run] Skipping execution.", flush=True)
         return {}
 
     # ---- step 8: execute ----
@@ -667,7 +672,7 @@ def run_tests(
 
     for round_idx, rnd in enumerate(device_rounds, start=1):
         round_t0 = time.monotonic()
-        print(f"\n== Round {round_idx}/{len(rounds)}: {len(rnd)} test(s) ==", flush=True)
+        ts_print(f"\n== Round {round_idx}/{len(rounds)}: {len(rnd)} test(s) ==", flush=True)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=len(rnd)) as executor:
             futs = {}
@@ -684,14 +689,14 @@ def run_tests(
                                       step_id, round_number, env.copy(),
                                       is_remote=bool(remote_host), is_mock=mock)
                 futs[fut] = test
-                print(f"  [{test}] started ({_test_cards(test)} card(s))", flush=True)
+                ts_print(f"  [{test}] started ({_test_cards(test)} card(s))", flush=True)
 
             round_results = []
             printed_failure = False
             for fut in concurrent.futures.as_completed(futs):
                 r = fut.result()
                 round_results.append(r)
-                print(f"  [{futs[fut]}] done: exit={r['run_suite_exit_code']}, "
+                ts_print(f"  [{futs[fut]}] done: exit={r['run_suite_exit_code']}, "
                       f"result={r['ci_result']}, bugs={r['code_bugs_count']}, "
                       f"flakes={r['env_flakes_count']}", flush=True)
                 if not printed_failure and r['run_suite_exit_code'] != 0:
@@ -700,23 +705,23 @@ def run_tests(
                     if log_path.exists():
                         log_content = log_path.read_text(encoding="utf-8", errors="replace")
                         tail = "\n".join(log_content.splitlines()[-40:])
-                        print(f"  [FAILED] log tail ({r['test']}):\n{tail}", flush=True)
+                        ts_print(f"  [FAILED] log tail ({r['test']}):\n{tail}", flush=True)
 
         round_elapsed = time.monotonic() - round_t0
         all_results.extend(round_results)
         rounds_info.append({"round": round_idx, "tests": [r["test"] for r in round_results],
                             "cards_used": sum(_test_cards(t) for t, _ in rnd),
                             "total_cards": total_cards, "elapsed_s": round(round_elapsed, 1)})
-        print(f"  Round {round_idx} elapsed: {round_elapsed:.1f}s", flush=True)
+        ts_print(f"  Round {round_idx} elapsed: {round_elapsed:.1f}s", flush=True)
 
         if remote_host:
             remote_ci = f"{remote_log_dir}/{step_id}/tests"
-            print(f"  Pulling remote logs: {remote_host}:{remote_ci} -> {ci_dir}", flush=True)
+            ts_print(f"  Pulling remote logs: {remote_host}:{remote_ci} -> {ci_dir}", flush=True)
             _sync_remote_dir(remote_host, remote_ci, ci_dir)
 
     total_elapsed = time.monotonic() - t0
     if remote_host:
-        print(f"\n=== Final log sync ===", flush=True)
+        ts_print(f"\n=== Final log sync ===", flush=True)
         _sync_remote_dir(remote_host, f"{remote_log_dir}/{step_id}/tests", ci_dir)
 
     # ---- step 9: aggregate ----
@@ -746,9 +751,9 @@ def run_tests(
         "failed_test_cases_count": sum(r["failed_test_cases_count"] for r in all_results),
     }
     result_path.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(f"\nmain2main CI aggregated: {overall}  (can_commit={result['can_commit']})", flush=True)
-    print(f"Total elapsed: {total_elapsed:.1f}s  ({total_elapsed/60:.1f} min)", flush=True)
-    print(f"Result written to {result_path}", flush=True)
+    ts_print(f"\nmain2main CI aggregated: {overall}  (can_commit={result['can_commit']})", flush=True)
+    ts_print(f"Total elapsed: {total_elapsed:.1f}s  ({total_elapsed/60:.1f} min)", flush=True)
+    ts_print(f"Result written to {result_path}", flush=True)
     return result
 
 

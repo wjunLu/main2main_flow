@@ -10,3 +10,4 @@ workspace/
 logs.txt
 *.pyc
 .claude/
+.codegraph/

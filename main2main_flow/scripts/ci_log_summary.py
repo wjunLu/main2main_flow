@@ -14,6 +14,8 @@ import re
 import sys
 from pathlib import Path
 
+from main2main_flow.utils import ts_print
+
 # ---- patterns ----
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -225,7 +227,7 @@ def main() -> None:
         if args.output:
             args.output.write_text(output, encoding="utf-8")
         else:
-            print(output, end="")
+            ts_print(output, end="")
         return
 
     log_text = args.log_file.read_text(encoding="utf-8", errors="replace")
@@ -235,7 +237,7 @@ def main() -> None:
     if args.output:
         args.output.write_text(output, encoding="utf-8")
     else:
-        print(output, end="")
+        ts_print(output, end="")
 
 
 if __name__ == "__main__":
