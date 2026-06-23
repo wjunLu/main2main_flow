@@ -41,6 +41,13 @@ DEFAULT_WORKSPACE_DIR = Path(__file__).parent.parent.parent / "workspace"
 _PR_URL_FILE = "/tmp/main2main/pr_url.txt"
 
 
+def _run_format(repo: Path) -> None:
+    """Run format.sh if available to fix lint issues before commit."""
+    fmt_script = repo / "format.sh"
+    if fmt_script.exists():
+        subprocess.run(["bash", str(fmt_script)], cwd=str(repo), capture_output=True)
+
+
 def _wait_for_fork_ref(head_fork: str, branch: str, expected_head: str,
                         timeout: int = 30) -> None:
     """Wait for the pushed branch to be visible on GitHub.
@@ -238,6 +245,7 @@ def push_and_create_pr(
                 # and commit — otherwise the push would send an empty branch.
                 branch = current_branch
                 ts_print(f"[push] Reusing branch '{branch}', committing working tree changes")
+                _run_format(ascend_path)
                 run_git(ascend_path, "add", "-A")
                 ts = datetime.now().strftime("%Y%m%d-%H%M%S")
                 commit_msg = _build_commit_msg(old_commit, new_commit, ts)
@@ -250,6 +258,7 @@ def push_and_create_pr(
                 run_git(ascend_path, "checkout", "-b", branch)
                 ts_print(f"[push] Created branch '{branch}', applying patch: {patch_file}")
                 run_git(ascend_path, "apply", str(patch_file))
+                _run_format(ascend_path)
                 run_git(ascend_path, "add", "-A")
                 commit_msg = _build_commit_msg(old_commit, new_commit, ts)
                 run_git(ascend_path, "commit", "-s", "-m", commit_msg)
